@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sidescroller Survival</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        canvas {
+            background-color: #333;
+            border: 2px solid #555;
+            display: block;
+        }
+        #upgrade-menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.85);
+            border: 2px solid #fff;
+            padding: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            display: none; /* Hidden by default */
+            z-index: 100;
+        }
+        #upgrade-menu button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            margin: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+        #upgrade-menu button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="upgrade-menu">
+        <h2>Escolha um Aprimoramento!</h2>
+        <div id="upgrade-options"></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const upgradeMenu = document.getElementById('upgrade-menu');
+        const upgradeOptionsDiv = document.getElementById('upgrade-options');
+
+        canvas.width = 1200;
+        canvas.height = 700;
+
+        // --- Game State Variables ---
+        let gameRunning = true;
+        let lastUpdateTime = 0;
+        const targetFPS = 60;
+        const frameInterval = 1000 / targetFPS;
+
+        // --- Player Configuration ---
+        const player = {
+            x: 100,
+            y: canvas.height - 100,
+            width: 40,
+            height: 60,
+            color: 'blue',
+            speed: 5,
+            jumpForce: -15,
+            gravity: 0.5,
+            velX: 0,
+            velY: 0,
+            isOnGround: false,
+            maxHp: 100,
+            currentHp: 100,
+            invulnerable: false,
+            invulnerableDuration: 500, // ms
+            lastHitTime: 0,
+            exp: 0,
+            level: 1,
+            expToNextLevel: 100,
+            baseProjectileDamage: 10,
+            projectileDamage: 10,
+            baseAttackSpeed: 300, // ms per shot
+            attackSpeed: 300,
+            lastShotTime: 0,
+            isShooting: false,
+            criticalChance: 0.05, // 5%
+            criticalDamageMultiplier: 1.5, // 50% extra
+            defense: 0, // Reduces incoming damage by a percentage
+            maxJumps: 1,
+            currentJumps: 1,
+            projectileSizeMultiplier: 1,
+            projectilePierce: 0, // How many enemies a projectile can hit before disappearing
+            invulnerabilityDurationMultiplier: 1, // affects baseInvulnerableDuration
+            projectileExplosionChance: 0, // Chance for projectile to explode on hit
+            projectileExplosionRadius: 0,
+            projectileExplosionDamage: 0,
+            lifesteal: 0, // Percentage of damage dealt
+            soulOrbChance: 0,
+            uncommonItemChance: 0,
+            healingOrbChance: 0,
+            bodyDamage: 0,
+            lightningStrikeChance: 0,
+            lightningStrikeInterval: 5000,
+            lastLightningStrikeTime: 0,
+            extraUpgradeChoices: 0,
+            shieldCooldown: 0, // cooldown for barrier
+            lastShieldTime: 0,
+            shieldActive: false,
+            enemySlowOnHit: 0,
+            movementDistance: 0, // For friction upgrades
+            lastPositionX: 0, // For friction upgrades
+            projectilePerMeter: 0,
+            projectilePerMeterCooldown: 1000,
+            lastProjectilePerMeterTime: 0,
+            focusAttackSpeedBonus: 0,
+            lastMovementTime: 0,
+            isMoving: false,
+            sizeMultiplier: 1, // For shrink upgrade
+            wispSummoned: false,
+            wisp: null,
+            bleedingDamage: 0, // Damage applied as bleeding
+        };
+
+        // Player starting attributes to reset for a new game
+        const initialPlayerState = { ...player };
+
+        // --- Keyboard and Mouse Input ---
+        const keys = {
+            a: false,
+            d: false,
+            space: false
+        };
+        let mouseX = 0;
+        let mouseY = 0;
+        let mouseIsDown = false;
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'a' || e.key === 'A') keys.a = true;
+            if (e.key === 'd' || e.key === 'D') keys.d = true;
+            if (e.key === ' ') keys.space = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'a' || e.key === 'A') keys.a = false;
+            if (e.key === 'd' || e.key === 'D') keys.d = false;
+            if (e.key === ' ') keys.space = false;
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) mouseIsDown = true;
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 0) mouseIsDown = false;
+        });
+
+        // --- Game Objects ---
+        const projectiles = [];
+        const enemies = [];
+        const particles = []; // For effects like explosions, hits
+
+        // --- Ground Topology (simplified representation) ---
+        const groundBlocks = [
+            // Base ground
+            { x: 0, y: canvas.height - 50, width: canvas.width, height: 50 },
+            // Steps (example, adjust as needed for "Image 1")
+            { x: 100, y: canvas.height - 100, width: 80, height: 50 },
+            { x: 250, y: canvas.height - 150, width: 80, height: 100 },
+            { x: 400, y: canvas.height - 200, width: 80, height: 150 },
+            { x: 550, y: canvas.height - 250, width: 80, height: 200 },
+            { x: 700, y: canvas.height - 300, width: 80, height: 250 },
+            { x: 850, y: canvas.height - 350, width: 80, height: 300 },
+            { x: 1000, y: canvas.height - 400, width: 80, height: 350 },
+            // A higher platform
+            { x: 200, y: canvas.height - 300, width: 150, height: 20 },
+            { x: 500, y: canvas.height - 450, width: 200, height: 20 },
+        ];
+
+        // --- Enemy Spawning ---
+        let enemySpawnInterval = 2000; // ms
+        let lastEnemySpawnTime = 0;
+        let enemyWave = 1;
+        let enemiesPerWave = 1;
+
+        // --- Upgrade System ---
+        const allUpgrades = [
+            { name: "Catalisador", description: "Dano de Projétil +2", apply: () => { player.projectileDamage += 2; } },
+            { name: "Visão", description: "Chance crítica +5%", apply: () => { player.criticalChance += 0.05; } },
+            { name: "Crescimento", description: "HP máx. +10", apply: () => { player.maxHp += 10; player.currentHp = Math.min(player.currentHp + 10, player.maxHp); } },
+            { name: "Impulso", description: "Altura do Salto +30%", apply: () => { player.jumpForce *= 1.3; } },
+            { name: "Renovar", description: "Curar até o máximo de HP", apply: () => { player.currentHp = player.maxHp; } },
+            { name: "Resistência", description: "Defesa +4%", apply: () => { player.defense += 0.04; } },
+            { name: "Ressonância", description: "Velocidade de Ataque +12%", apply: () => { player.attackSpeed *= 0.88; } },
+            { name: "Almas", description: "Chance de dropar orbe de alma 1%", apply: () => { player.soulOrbChance += 0.01; } },
+            { name: "Estabilidade", description: "O projétil recebe +1 de acerto antes de explodir", apply: () => { player.projectilePierce += 1; } }, // Simplified to pierce for now
+            { name: "Veloz", description: "Velocidade de Movimento +20%", apply: () => { player.speed *= 1.2; } },
+            { name: "Catalisador+", description: "Dano de Projétil +4", apply: () => { player.projectileDamage += 4; } },
+            { name: "Carga", description: "Tamanho do Projétil +20%", apply: () => { player.projectileSizeMultiplier *= 1.2; } },
+            { name: "Manto", description: "Invulnerabilidade após receber dano +10% de duração", apply: () => { player.invulnerabilityDurationMultiplier += 0.1; } },
+            { name: "Fragmentação", description: "Ao serem mortos, os inimigos liberam 2 projéteis mais fracos em direções aleatórias", apply: () => { /* Logic to be added to enemy death */ } },
+            { name: "Atrito", description: "Para cada metro que você corre, 1 projétil explosivo é lançado para cima", apply: () => { player.projectilePerMeter += 1; player.projectileExplosionChance = 0.5; player.projectileExplosionRadius = 20; player.projectileExplosionDamage = player.projectileDamage / 2; } },
+            { name: "Crescimento+", description: "HP máx. +20", apply: () => { player.maxHp += 20; player.currentHp = Math.min(player.currentHp + 20, player.maxHp); } },
+            { name: "Gush", description: "Adiciona +1 Salto", apply: () => { player.maxJumps += 1; } },
+            { name: "Sanguessuga", description: "Roubo de Vida de 3% de Dano", apply: () => { player.lifesteal += 0.03; } },
+            { name: "Sorte", description: "Maior chance de rolar itens incomuns", apply: () => { player.uncommonItemChance += 0.05; } },
+            { name: "Orbe", description: "Inimigos mortos têm 5% de chance de derrubar um orbe de cura", apply: () => { player.healingOrbChance += 0.05; } },
+            { name: "Precisão", description: "Crítico causa +50% de dano", apply: () => { player.criticalDamageMultiplier += 0.5; } },
+            { name: "Fúria", description: "Se tiver menos de 50% de HP, aumenta o dano do projétil e do corpo de acordo (até 50%)", apply: () => { /* Logic applied dynamically */ } },
+            { name: "Recrescimento", description: "Regenera HP% com base no número de inimigos vivos", apply: () => { /* Logic applied dynamically */ } },
+            { name: "Ressonância+", description: "Velocidade de Ataque +24%", apply: () => { player.attackSpeed *= 0.76; } },
+            { name: "Encolher", description: "Torna você 10% menor", apply: () => { player.sizeMultiplier *= 0.9; player.width *= 0.9; player.height *= 0.9; } },
+            { name: "Swift+", description: "Velocidade de Movimento +40%", apply: () => { player.speed *= 1.4; } },
+            { name: "Thunderbolt", description: "Chama 2 raios dos céus a cada poucos segundos", apply: () => { player.lightningStrikeChance += 2; player.lastLightningStrikeTime = performance.now(); } },
+            { name: "Avaliação", description: "+1 escolha de item a partir de agora", apply: () => { player.extraUpgradeChoices += 1; } },
+            { name: "Barreira", description: "Cria um escudo que bloqueia o dano uma vez a cada poucos segundos", apply: () => { player.shieldCooldown = 10000; player.lastShieldTime = performance.now() - player.shieldCooldown; } }, // 10-second cooldown
+            { name: "Frio", description: "Os inimigos ficam 1% mais lentos cada vez que recebem dano (até 80%)", apply: () => { player.enemySlowOnHit += 0.01; } },
+            { name: "Fragmentação+", description: "Ao serem mortos, os inimigos liberam 6 projéteis mais fracos em direções aleatórias", apply: () => { /* Logic to be added to enemy death */ } },
+            { name: "Friction+", description: "Para cada metro que você corre, 3 projéteis explosivos são lançados para cima", apply: () => { player.projectilePerMeter += 3; player.projectileExplosionChance = 1; player.projectileExplosionRadius = 30; player.projectileExplosionDamage = player.projectileDamage; } },
+            { name: "Foco", description: "Ganha velocidade de ataque a cada segundo que você não se move. Reinicia a cada onda", apply: () => { /* Logic applied dynamically */ } },
+            { name: "Crescimento++", description: "HP máx. +40", apply: () => { player.maxHp += 40; player.currentHp = Math.min(player.currentHp + 40, player.maxHp); } },
+            { name: "Imortal", description: "+1 Reviver (mata todos os inimigos ao reviver) - carta removida do jogo", apply: () => { /* Not implemented as per instructions */ } },
+            { name: "Leech+", description: "Roubo de Vida de 9% de Dano", apply: () => { player.lifesteal += 0.09; } },
+            { name: "Superaquecimento", description: "Seu corpo causa 40 de dano ao contato", apply: () => { player.bodyDamage += 40; } },
+            { name: "Thunderbolt+", description: "Chama 6 raios dos céus a cada poucos segundos", apply: () => { player.lightningStrikeChance += 6; player.lastLightningStrikeTime = performance.now(); } },
+            { name: "Tome", description: "Novos itens comuns (brancos) que você pega são 35% mais eficazes", apply: () => { /* Affects future common upgrades, complex to implement here directly */ } },
+            { name: "Will-O-Wisp", description: "Invoca um fogo-fátuo que herda metade do seu dano de ataque e velocidade", apply: () => { if (!player.wispSummoned) { player.wispSummoned = true; player.wisp = { x: player.x, y: player.y - 50, damage: player.projectileDamage / 2, attackSpeed: player.attackSpeed * 2, lastShotTime: 0 }; } } },
+            { name: "Ferimento", description: "Causar dano aplica sangramento ao inimigo", apply: () => { player.bleedingDamage += 5; } }, // Example bleeding damage
+        ];
+
+        let availableUpgrades = [...allUpgrades];
+        let currentUpgradeChoices = [];
+
+        // --- Utility Functions ---
+        function calculateDistance(x1, y1, x2, y2) {
+            return Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
+        }
+
+        function normalizeVector(x, y) {
+            const length = Math.sqrt(x * x + y * y);
+            return { x: x / length, y: y / length };
+        }
+
+        function getUpgradeChoices(count) {
+            const choices = [];
+            const shuffled = availableUpgrades.sort(() => 0.5 - Math.random());
+            for (let i = 0; i < count && i < shuffled.length; i++) {
+                choices.push(shuffled[i]);
+            }
+            return choices;
+        }
+
+        function showUpgradeMenu() {
+            gameRunning = false;
+            upgradeMenu.style.display = 'block';
+            upgradeOptionsDiv.innerHTML = '';
+            currentUpgradeChoices = getUpgradeChoices(3 + player.extraUpgradeChoices); // 3 base choices + extra
+
+            currentUpgradeChoices.forEach(upgrade => {
+                const button = document.createElement('button');
+                button.textContent = `${upgrade.name}: ${upgrade.description}`;
+                button.onclick = () => selectUpgrade(upgrade);
+                upgradeOptionsDiv.appendChild(button);
+            });
+        }
+
+        function selectUpgrade(upgrade) {
+            upgrade.apply();
+            // Remove selected upgrade from available upgrades for next time if it's a one-time pick
+            // For now, allow re-picking. If specific upgrades should be one-time, add a flag to them.
+            // Example: If Renovar should only be picked once:
+            // if (upgrade.name === "Renovar") {
+            //     availableUpgrades = availableUpgrades.filter(u => u.name !== "Renovar");
+            // }
+            hideUpgradeMenu();
+            gameRunning = true;
+        }
+
+        function hideUpgradeMenu() {
+            upgradeMenu.style.display = 'none';
+        }
+
+        // --- Game Logic ---
+
+        function update(deltaTime) {
+            if (!gameRunning) return;
+
+            // Player Movement
+            player.velX = 0;
+            if (keys.a) player.velX = -player.speed;
+            if (keys.d) player.velX = player.speed;
+
+            // Check if player is moving for focus upgrade
+            player.isMoving = (keys.a || keys.d);
+
+            // Apply gravity
+            player.velY += player.gravity;
+
+            // Apply horizontal movement
+            player.x += player.velX;
+
+            // Update movement distance for friction upgrade
+            player.movementDistance += Math.abs(player.x - player.lastPositionX);
+            player.lastPositionX = player.x;
+
+            if (player.movementDistance >= 100 && player.projectilePerMeter > 0) { // 100 pixels ~= 1 meter
+                if (performance.now() - player.lastProjectilePerMeterTime > player.projectilePerMeterCooldown) {
+                    for (let i = 0; i < player.projectilePerMeter; i++) {
+                        // Launch explosive projectile upwards
+                        projectiles.push({
+                            x: player.x + player.width / 2,
+                            y: player.y,
+                            radius: 5 * player.projectileSizeMultiplier,
+                            color: 'orange',
+                            velX: (Math.random() - 0.5) * 5,
+                            velY: -10 - Math.random() * 5,
+                            damage: player.projectileDamage,
+                            owner: 'player',
+                            pierce: player.projectilePierce,
+                            hits: 0,
+                            maxHits: player.projectilePierce + 1,
+                            isExplosive: true,
+                            explosionRadius: player.projectileExplosionRadius,
+                            explosionDamage: player.projectileExplosionDamage,
+                            ttl: 1500, // Time to live for these projectiles
+                            spawnTime: performance.now()
+                        });
+                    }
+                    player.movementDistance = 0;
+                    player.lastProjectilePerMeterTime = performance.now();
+                }
+            }
+
+
+            // Player Jump
+            if (keys.space && player.currentJumps > 0) {
+                player.velY = player.jumpForce;
+                player.currentJumps--;
+                keys.space = false; // Prevent continuous jump if space held
+            }
+
+            // Player-Ground Collision
+            player.isOnGround = false;
+            let targetY = player.y + player.velY;
+            let newVelY = player.velY;
+
+            let playerRect = {
+                x: player.x,
+                y: player.y,
+                width: player.width * player.sizeMultiplier,
+                height: player.height * player.sizeMultiplier
+            };
+
+            // Check X-axis collisions first
+            for (const block of groundBlocks) {
+                if (player.velX > 0) { // Moving right
+                    if (playerRect.x + playerRect.width + player.velX > block.x &&
+                        playerRect.x + playerRect.width <= block.x &&
+                        playerRect.y < block.y + block.height &&
+                        playerRect.y + playerRect.height > block.y) {
+                        player.x = block.x - playerRect.width;
+                        player.velX = 0;
+                    }
+                } else if (player.velX < 0) { // Moving left
+                    if (playerRect.x + player.velX < block.x + block.width &&
+                        playerRect.x >= block.x + block.width &&
+                        playerRect.y < block.y + block.height &&
+                        playerRect.y + playerRect.height > block.y) {
+                        player.x = block.x + block.width;
+                        player.velX = 0;
+                    }
+                }
+            }
+            player.x += player.velX; // Apply horizontal movement after collision check
+
+
+            // Check Y-axis collisions
+            playerRect = { // Recalculate playerRect after X movement
+                x: player.x,
+                y: player.y,
+                width: player.width * player.sizeMultiplier,
+                height: player.height * player.sizeMultiplier
+            };
+
+            for (const block of groundBlocks) {
+                // Check if falling onto a block
+                if (player.velY > 0 &&
+                    playerRect.y + playerRect.height <= block.y &&
+                    targetY + playerRect.height > block.y &&
+                    playerRect.x < block.x + block.width &&
+                    playerRect.x + playerRect.width > block.x) {
+                    player.y = block.y - playerRect.height;
+                    newVelY = 0;
+                    player.isOnGround = true;
+                    player.currentJumps = player.maxJumps; // Reset jumps on ground
+                    break;
+                }
+                // Check if hitting head on a block
+                else if (player.velY < 0 &&
+                    playerRect.y >= block.y + block.height &&
+                    targetY < block.y + block.height &&
+                    playerRect.x < block.x + block.width &&
+                    playerRect.x + playerRect.width > block.x) {
+                    player.y = block.y + block.height;
+                    newVelY = 0;
+                    break;
+                }
+            }
+
+            player.y += newVelY; // Apply vertical movement
+            player.velY = newVelY;
+
+
+            // Keep player within canvas bounds
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width * player.sizeMultiplier > canvas.width) player.x = canvas.width - player.width * player.sizeMultiplier;
+
+            // Apply invulnerability
+            if (player.invulnerable && performance.now() - player.lastHitTime > player.invulnerableDuration * player.invulnerabilityDurationMultiplier) {
+                player.invulnerable = false;
+            }
+
+            // Player Shooting
+            const currentTime = performance.now();
+            const actualAttackSpeed = player.attackSpeed / (1 + player.focusAttackSpeedBonus); // Apply focus bonus
+            if (mouseIsDown && currentTime - player.lastShotTime > actualAttackSpeed) {
+                const projectileSpeed = 10;
+                const angle = Math.atan2(mouseY - (player.y + player.height / 2), mouseX - (player.x + player.width / 2));
+                const dirX = Math.cos(angle);
+                const dirY = Math.sin(angle);
+
+                let damage = player.projectileDamage;
+                let isCritical = Math.random() < player.criticalChance;
+                if (isCritical) {
+                    damage *= player.criticalDamageMultiplier;
+                }
+
+                projectiles.push({
+                    x: player.x + player.width / 2,
+                    y: player.y + player.height / 2,
+                    radius: 7 * player.projectileSizeMultiplier,
+                    color: isCritical ? 'yellow' : 'red',
+                    velX: dirX * projectileSpeed,
+                    velY: dirY * projectileSpeed,
+                    damage: damage,
+                    owner: 'player',
+                    pierce: player.projectilePierce,
+                    hits: 0,
+                    maxHits: player.projectilePierce + 1,
+                    isCritical: isCritical,
+                    isExplosive: false,
+                    explosionRadius: 0,
+                    explosionDamage: 0,
+                    bleedingDamage: player.bleedingDamage
+                });
+                player.lastShotTime = currentTime;
+            }
+
+            // Wisp logic
+            if (player.wispSummoned && player.wisp) {
+                // Move wisp towards player
+                const wispSpeed = 3;
+                const wispDx = player.x + player.width / 2 - player.wisp.x;
+                const wispDy = player.y - 50 - player.wisp.y;
+                const wispDist = Math.sqrt(wispDx * wispDx + wispDy * wispDy);
+                if (wispDist > 1) {
+                    player.wisp.x += wispDx / wispDist * wispSpeed;
+                    player.wisp.y += wispDy / wispDist * wispSpeed;
+                }
+
+                // Wisp shoots at nearest enemy
+                if (enemies.length > 0 && currentTime - player.wisp.lastShotTime > player.wisp.attackSpeed) {
+                    let nearestEnemy = null;
+                    let minDist = Infinity;
+                    for (const enemy of enemies) {
+                        const dist = calculateDistance(player.wisp.x, player.wisp.y, enemy.x, enemy.y);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearestEnemy = enemy;
+                        }
+                    }
+
+                    if (nearestEnemy) {
+                        const projectileSpeed = 8;
+                        const angle = Math.atan2(nearestEnemy.y + nearestEnemy.height / 2 - player.wisp.y, nearestEnemy.x + nearestEnemy.width / 2 - player.wisp.x);
+                        const dirX = Math.cos(angle);
+                        const dirY = Math.sin(angle);
+
+                        projectiles.push({
+                            x: player.wisp.x,
+                            y: player.wisp.y,
+                            radius: 5,
+                            color: 'purple',
+                            velX: dirX * projectileSpeed,
+                            velY: dirY * projectileSpeed,
+                            damage: player.wisp.damage,
+                            owner: 'wisp',
+                            pierce: 0,
+                            hits: 0,
+                            maxHits: 1,
+                            isCritical: false,
+                            isExplosive: false,
+                            explosionRadius: 0,
+                            explosionDamage: 0,
+                            bleedingDamage: player.bleedingDamage
+                        });
+                        player.wisp.lastShotTime = currentTime;
+                    }
+                }
+            }
+
+
+            // Focus upgrade logic
+            if (player.isMoving) {
+                player.lastMovementTime = currentTime;
+                player.focusAttackSpeedBonus = 0; // Reset bonus if moving
+            } else {
+                const timeSinceLastMove = currentTime - player.lastMovementTime;
+                // Gain 10% attack speed per second not moving, up to a cap (e.g., 50%)
+                player.focusAttackSpeedBonus = Math.min(0.5, (timeSinceLastMove / 1000) * 0.1);
+            }
+
+            // Recrescimento (Regen based on enemies)
+            if (player.currentHp < player.maxHp && enemies.length > 0) {
+                const regenAmount = 0.0001 * enemies.length * player.maxHp; // Small percentage per enemy
+                player.currentHp = Math.min(player.maxHp, player.currentHp + regenAmount);
+            }
+
+            // Fúria (Rage based on low HP)
+            if (player.currentHp < player.maxHp * 0.5) {
+                const hpPercentage = player.currentHp / player.maxHp;
+                const damageBoost = (0.5 - hpPercentage) * 2; // Linear boost from 0% at 50% HP to 100% at 0% HP
+                player.projectileDamage = player.baseProjectileDamage * (1 + damageBoost);
+                player.bodyDamage = player.bodyDamage > 0 ? player.bodyDamage : 0; // Body damage boost
+            } else {
+                player.projectileDamage = player.baseProjectileDamage; // Reset if HP is above 50%
+            }
+
+
+            // Thunderbolt logic
+            if (player.lightningStrikeChance > 0 && currentTime - player.lastLightningStrikeTime > player.lightningStrikeInterval) {
+                for (let i = 0; i < player.lightningStrikeChance; i++) {
+                    if (enemies.length > 0) {
+                        const targetEnemy = enemies[Math.floor(Math.random() * enemies.length)];
+                        // Create a lightning strike effect (visual only, damage applies instantly)
+                        particles.push({
+                            x: targetEnemy.x + targetEnemy.width / 2,
+                            y: targetEnemy.y + targetEnemy.height / 2,
+                            color: 'cyan',
+                            radius: 10,
+                            type: 'lightning',
+                            alpha: 1,
+                            fadeSpeed: 0.05,
+                            duration: 300
+                        });
+                        dealDamage(targetEnemy, 50 + player.projectileDamage, 'player'); // Base lightning damage + player projectile damage
+                    }
+                }
+                player.lastLightningStrikeTime = currentTime;
+            }
+
+            // Shield logic
+            if (player.shieldCooldown > 0 && currentTime - player.lastShieldTime > player.shieldCooldown && !player.shieldActive) {
+                player.shieldActive = true;
+            }
+
+
+            // Update Projectiles
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i];
+                p.x += p.velX;
+                p.y += p.velY;
+
+                // Remove projectiles out of bounds or expired
+                if (p.x < -10 || p.x > canvas.width + 10 || p.y < -10 || p.y > canvas.height + 10 || (p.ttl && currentTime - p.spawnTime > p.ttl)) {
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+
+                // Projectile-Enemy Collision
+                if (p.owner === 'player' || p.owner === 'wisp') {
+                    for (let j = enemies.length - 1; j >= 0; j--) {
+                        const enemy = enemies[j];
+                        if (
+                            p.x < enemy.x + enemy.width &&
+                            p.x + p.radius > enemy.x &&
+                            p.y < enemy.y + enemy.height &&
+                            p.y + p.radius > enemy.y
+                        ) {
+                            dealDamage(enemy, p.damage, p.owner);
+
+                            if (p.bleedingDamage > 0) {
+                                enemy.bleeds = true;
+                                enemy.bleedingTick = 0;
+                                enemy.bleedingInterval = 500; // Tick every 0.5s
+                                enemy.bleedingDamagePerTick = p.bleedingDamage;
+                                enemy.bleedingDuration = 3000; // 3 seconds
+                                enemy.bleedingStartTime = currentTime;
+                            }
+
+                            if (player.enemySlowOnHit > 0) {
+                                enemy.currentSpeedMultiplier = Math.max(0.2, enemy.currentSpeedMultiplier - player.enemySlowOnHit); // Max 80% slow
+                            }
+
+                            if (p.isExplosive && p.hits === 0) { // Explode on first hit if explosive
+                                // Create an explosion effect
+                                particles.push({
+                                    x: p.x, y: p.y, color: 'orange', radius: p.explosionRadius,
+                                    type: 'explosion', alpha: 1, fadeSpeed: 0.05, duration: 300
+                                });
+                                // Damage enemies in radius
+                                for (const explEnemy of enemies) {
+                                    if (calculateDistance(p.x, p.y, explEnemy.x + explEnemy.width / 2, explEnemy.y + explEnemy.height / 2) < p.explosionRadius) {
+                                        dealDamage(explEnemy, p.explosionDamage, p.owner);
+                                    }
+                                }
+                                projectiles.splice(i, 1);
+                                break; // Break from inner loop as projectile is gone
+                            }
+
+                            p.hits++;
+                            if (p.hits >= p.maxHits) {
+                                projectiles.splice(i, 1);
+                                break; // Break from inner loop as projectile is gone
+                            }
+                        }
+                    }
+                } else if (p.owner === 'enemy') {
+                    if (!player.invulnerable &&
+                        p.x < player.x + player.width &&
+                        p.x + p.radius > player.x &&
+                        p.y < player.y + player.height &&
+                        p.y + p.radius > player.y
+                    ) {
+                        if (player.shieldActive) {
+                            player.shieldActive = false;
+                            player.lastShieldTime = currentTime; // Start cooldown
+                            projectiles.splice(i, 1);
+                            // Add a visual shield hit effect
+                            particles.push({
+                                x: p.x, y: p.y, color: 'blue', radius: 15,
+                                type: 'shield_hit', alpha: 1, fadeSpeed: 0.08, duration: 200
+                            });
+                            break;
+                        } else {
+                            player.currentHp -= p.damage * (1 - player.defense);
+                            player.invulnerable = true;
+                            player.lastHitTime = currentTime;
+                            projectiles.splice(i, 1);
+                            if (player.currentHp <= 0) {
+                                gameOver();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Update Enemies
+            if (currentTime - lastEnemySpawnTime > enemySpawnInterval) {
+                for (let i = 0; i < enemiesPerWave; i++) {
+                    const enemy = {
+                        x: Math.random() * (canvas.width - 60) + 30,
+                        y: 0,
+                        width: 50,
+                        height: 50,
+                        color: 'green',
+                        speed: 2 + enemyWave * 0.1,
+                        targetY: canvas.height * 0.7, // 70% height
+                        isTracking: false,
+                        maxHp: 50 + enemyWave * 10,
+                        currentHp: 50 + enemyWave * 10,
+                        attackSpeed: 1500 - enemyWave * 10, // Faster with waves
+                        lastShotTime: 0,
+                        expValue: 20 + enemyWave * 5,
+                        currentSpeedMultiplier: 1, // For cold upgrade
+                        bleeds: false,
+                        bleedingTick: 0,
+                        bleedingInterval: 0,
+                        bleedingDamagePerTick: 0,
+                        bleedingDuration: 0,
+                        bleedingStartTime: 0,
+                    };
+                    enemies.push(enemy);
+                }
+                lastEnemySpawnTime = currentTime;
+                enemyWave++;
+                enemiesPerWave = 1 + Math.floor(enemyWave / 5); // More enemies every 5 waves
+                enemySpawnInterval = Math.max(500, enemySpawnInterval * 0.95); // Shorter interval
+            }
+
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+
+                // Bleeding logic
+                if (enemy.bleeds && currentTime - enemy.bleedingStartTime < enemy.bleedingDuration) {
+                    if (currentTime - enemy.bleedingTick > enemy.bleedingInterval) {
+                        enemy.currentHp -= enemy.bleedingDamagePerTick;
+                        enemy.bleedingTick = currentTime;
+                        particles.push({ x: enemy.x + enemy.width / 2, y: enemy.y + enemy.height / 2, color: 'darkred', radius: 3, type: 'blood', alpha: 1, fadeSpeed: 0.08, duration: 300 });
+                    }
+                } else if (enemy.bleeds) {
+                    enemy.bleeds = false; // Bleeding finished
+                }
+
+                if (!enemy.isTracking) {
+                    enemy.y += enemy.speed * enemy.currentSpeedMultiplier;
+                    if (enemy.y >= enemy.targetY) {
+                        enemy.y = enemy.targetY;
+                        enemy.isTracking = true;
+                    }
+                } else {
+                    // Smooth tracking
+                    const targetX = player.x + player.width / 2;
+                    const targetY = player.y + player.height / 2;
+                    const dx = targetX - (enemy.x + enemy.width / 2);
+                    const dy = targetY - (enemy.y + enemy.height / 2);
+                    const angle = Math.atan2(dy, dx);
+
+                    // Add a slight delay/smoothness to tracking
+                    const trackingSpeedFactor = 0.05; // Adjust for more/less smoothness
+                    enemy.x += dx * trackingSpeedFactor * enemy.currentSpeedMultiplier;
+                    enemy.y += dy * trackingSpeedFactor * enemy.currentSpeedMultiplier;
+
+                    // Enemy Shooting
+                    if (currentTime - enemy.lastShotTime > enemy.attackSpeed) {
+                        const projectileSpeed = 8;
+                        const angleToPlayer = Math.atan2(player.y + player.height / 2 - (enemy.y + enemy.height / 2), player.x + player.width / 2 - (enemy.x + enemy.width / 2));
+                        const dirX = Math.cos(angleToPlayer);
+                        const dirY = Math.sin(angleToPlayer);
+
+                        projectiles.push({
+                            x: enemy.x + enemy.width / 2,
+                            y: enemy.y + enemy.height / 2,
+                            radius: 5,
+                            color: 'purple',
+                            velX: dirX * projectileSpeed,
+                            velY: dirY * projectileSpeed,
+                            damage: 15 + enemyWave, // Enemy projectile damage increases
+                            owner: 'enemy',
+                            pierce: 0,
+                            hits: 0,
+                            maxHits: 1,
+                            isExplosive: false,
+                            explosionRadius: 0,
+                            explosionDamage: 0
+                        });
+                        enemy.lastShotTime = currentTime;
+                    }
+                }
+
+                // Check for player body collision with enemy
+                if (player.bodyDamage > 0 && !player.invulnerable &&
+                    player.x < enemy.x + enemy.width &&
+                    player.x + player.width > enemy.x &&
+                    player.y < enemy.y + enemy.height &&
+                    player.y + player.height > enemy.y
+                ) {
+                    dealDamage(enemy, player.bodyDamage, 'player');
+                    // Player also takes damage from collision if not invincible (or could just be knockback)
+                    // For now, let's say contact damage is primarily for enemy, and player takes damage from enemy projectiles
+                }
+            }
+
+            // Update Particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.alpha -= p.fadeSpeed;
+                if (p.alpha <= 0 || currentTime - p.spawnTime > p.duration) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        function dealDamage(target, amount, source) {
+            target.currentHp -= amount;
+
+            if (source === 'player' && player.lifesteal > 0) {
+                player.currentHp = Math.min(player.maxHp, player.currentHp + amount * player.lifesteal);
+            }
+
+            // Create hit particle
+            particles.push({
+                x: target.x + target.width / 2,
+                y: target.y + target.height / 2,
+                color: 'white',
+                radius: 5,
+                type: 'hit',
+                alpha: 1,
+                fadeSpeed: 0.08,
+                duration: 200,
+            });
+
+            if (target.currentHp <= 0) {
+                if (target.expValue) { // If it's an enemy
+                    player.exp += target.expValue;
+                    if (Math.random() < player.soulOrbChance) {
+                        // Spawn soul orb (healing or temp buff)
+                        console.log("Soul orb dropped!");
+                    }
+                    if (Math.random() < player.healingOrbChance) {
+                        // Spawn healing orb
+                        player.currentHp = Math.min(player.maxHp, player.currentHp + player.maxHp * 0.05); // Heal 5% max HP
+                        particles.push({
+                            x: target.x + target.width / 2, y: target.y + target.height / 2, color: 'lime', radius: 10,
+                            type: 'healing_orb', alpha: 1, fadeSpeed: 0.05, duration: 500
+                        });
+                    }
+
+                    // Fragmentation upgrade logic
+                    if (target.fragmentation) { // Assuming enemies have a fragmentation flag
+                        // For now, let's hardcode the effect based on player upgrades
+                        let numProjectiles = 0;
+                        if (allUpgrades.find(u => u.name === "Fragmentação" && currentUpgradeChoices.includes(u))) numProjectiles += 2;
+                        if (allUpgrades.find(u => u.name === "Fragmentação+" && currentUpgradeChoices.includes(u))) numProjectiles += 6;
+
+                        for (let i = 0; i < numProjectiles; i++) {
+                            const angle = Math.random() * Math.PI * 2; // Random direction
+                            const fragSpeed = 5;
+                            projectiles.push({
+                                x: target.x + target.width / 2,
+                                y: target.y + target.height / 2,
+                                radius: 3,
+                                color: 'lightgray',
+                                velX: Math.cos(angle) * fragSpeed,
+                                velY: Math.sin(angle) * fragSpeed,
+                                damage: player.projectileDamage / 4, // Weaker projectiles
+                                owner: 'player',
+                                pierce: 0,
+                                hits: 0,
+                                maxHits: 1,
+                                isExplosive: false,
+                                explosionRadius: 0,
+                                explosionDamage: 0,
+                                ttl: 1000,
+                                spawnTime: performance.now()
+                            });
+                        }
+                    }
+                }
+                // Remove the target if it's an enemy
+                enemies.splice(enemies.indexOf(target), 1);
+            }
+        }
+
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            // Draw Ground
+            ctx.fillStyle = '#666';
+            for (const block of groundBlocks) {
+                ctx.fillRect(block.x, block.y, block.width, block.height);
+            }
+
+            // Draw Player
+            ctx.fillStyle = player.color;
+            if (player.invulnerable && (Math.floor(performance.now() / 100) % 2 === 0)) {
+                // Flash player when invulnerable
+                ctx.globalAlpha = 0.5;
+            } else {
+                ctx.globalAlpha = 1;
+            }
+            ctx.fillRect(player.x, player.y, player.width * player.sizeMultiplier, player.height * player.sizeMultiplier);
+            ctx.globalAlpha = 1; // Reset alpha
+
+            // Draw Wisp
+            if (player.wispSummoned && player.wisp) {
+                ctx.fillStyle = 'purple';
+                ctx.beginPath();
+                ctx.arc(player.wisp.x, player.wisp.y, 10, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Draw Projectiles
+            for (const p of projectiles) {
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Draw Enemies
+            for (const enemy of enemies) {
+                ctx.fillStyle = enemy.color;
+                if (enemy.bleeds && (Math.floor(performance.now() / 100) % 2 === 0)) {
+                    ctx.fillStyle = 'darkred'; // Flash red if bleeding
+                }
+                ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+
+                // Draw enemy HP bar
+                const hpBarWidth = enemy.width;
+                const hpBarHeight = 5;
+                const hpBarX = enemy.x;
+                const hpBarY = enemy.y - hpBarHeight - 2;
+                ctx.fillStyle = 'red';
+                ctx.fillRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
+                ctx.fillStyle = 'lime';
+                ctx.fillRect(hpBarX, hpBarY, (enemy.currentHp / enemy.maxHp) * hpBarWidth, hpBarHeight);
+            }
+
+            // Draw Particles
+            for (const p of particles) {
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+
+            // Draw UI
+            // HP Bar
+            const hpBarX = 10;
+            const hpBarY = 10;
+            const hpBarWidth = 200;
+            const hpBarHeight = 20;
+            ctx.fillStyle = 'red';
+            ctx.fillRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
+            ctx.fillStyle = 'lime';
+            ctx.fillRect(hpBarX, hpBarY, (player.currentHp / player.maxHp) * hpBarWidth, hpBarHeight);
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
+            ctx.fillStyle = 'white';
+            ctx.font = '14px Arial';
+            ctx.fillText(`HP: ${Math.floor(player.currentHp)}/${player.maxHp}`, hpBarX + 5, hpBarY + 15);
+
+            // EXP Bar
+            const expBarX = 10;
+            const expBarY = 40;
+            const expBarWidth = 200;
+            const expBarHeight = 15;
+            ctx.fillStyle = 'darkgray';
+            ctx.fillRect(expBarX, expBarY, expBarWidth, expBarHeight);
+            ctx.fillStyle = 'yellow';
+            ctx.fillRect(expBarX, expBarY, (player.exp / player.expToNextLevel) * expBarWidth, expBarHeight);
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(expBarX, expBarY, expBarWidth, expBarHeight);
+            ctx.fillStyle = 'white';
+            ctx.font = '12px Arial';
+            ctx.fillText(`LV ${player.level} EXP: ${Math.floor(player.exp)}/${player.expToNextLevel}`, expBarX + 5, expBarY + 12);
+
+            // Draw Shield UI
+            if (player.shieldCooldown > 0) {
+                const shieldIconX = 10;
+                const shieldIconY = 70;
+                const shieldIconSize = 30;
+                ctx.strokeStyle = 'blue';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(shieldIconX + shieldIconSize / 2, shieldIconY + shieldIconSize / 2, shieldIconSize / 2 - 2, 0, Math.PI * 2);
+                ctx.stroke();
+
+                if (player.shieldActive) {
+                    ctx.fillStyle = 'rgba(0, 0, 255, 0.5)';
+                    ctx.fill();
+                } else {
+                    const cooldownProgress = (performance.now() - player.lastShieldTime) / player.shieldCooldown;
+                    const endAngle = Math.PI * 2 * cooldownProgress - Math.PI / 2;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    ctx.beginPath();
+                    ctx.moveTo(shieldIconX + shieldIconSize / 2, shieldIconY + shieldIconSize / 2);
+                    ctx.arc(shieldIconX + shieldIconSize / 2, shieldIconY + shieldIconSize / 2, shieldIconSize / 2, -Math.PI / 2, endAngle);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+        }
+
+        function checkLevelUp() {
+            if (player.exp >= player.expToNextLevel) {
+                player.level++;
+                player.exp -= player.expToNextLevel;
+                player.expToNextLevel = Math.floor(player.expToNextLevel * 1.5); // Next level harder
+                player.currentHp = player.maxHp; // Heal on level up
+                showUpgradeMenu();
+            }
+        }
+
+        function gameOver() {
+            gameRunning = false;
+            alert("Game Over! Você atingiu o nível " + player.level);
+            // Optionally reset game or show restart button
+            // resetGame();
+        }
+
+        // --- Game Loop ---
+        function gameLoop(currentTime) {
+            if (!lastUpdateTime) lastUpdateTime = currentTime;
+            const deltaTime = currentTime - lastUpdateTime;
+
+            if (deltaTime > frameInterval) {
+                lastUpdateTime = currentTime - (deltaTime % frameInterval);
+
+                update(deltaTime);
+                draw();
+                checkLevelUp();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize game state for a new game
+        function resetGame() {
+            Object.assign(player, initialPlayerState);
+            player.x = 100;
+            player.y = canvas.height - 100;
+            player.currentHp = player.maxHp;
+            player.exp = 0;
+            player.level = 1;
+            player.expToNextLevel = 100;
+            projectiles.length = 0;
+            enemies.length = 0;
+            particles.length = 0;
+            enemyWave = 1;
+            enemiesPerWave = 1;
+            enemySpawnInterval = 2000;
+            lastEnemySpawnTime = 0;
+            availableUpgrades = [...allUpgrades]; // Reset available upgrades
+            player.lastMovementTime = performance.now(); // Initialize for focus
+            player.lastPositionX = player.x; // For friction
+            hideUpgradeMenu();
+            gameRunning = true;
+            requestAnimationFrame(gameLoop);
+        }
+
+        resetGame(); // Start the game when the script loads
+
+    </script>
+</body>
+</html>
